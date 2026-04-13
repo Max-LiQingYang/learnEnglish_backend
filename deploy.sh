@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 # deploy.sh — 后端一键部署脚本
-# 用法: bash deploy.sh
 #
 # 流程: git pull → npm install → npm run build → pm2 restart
 #

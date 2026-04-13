@@ -1,6 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import bcrypt from 'bcryptjs';
-import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import { sendVerificationEmail } from '../services/email.js';
 
@@ -13,6 +12,11 @@ const RegisterBody = z.object({
 const LoginBody = z.object({
   email: z.string().email(),
   password: z.string(),
+});
+
+const VerifyCodeBody = z.object({
+  email: z.string().email(),
+  code: z.string().length(6),
 });
 
 const RefreshBody = z.object({
@@ -29,6 +33,10 @@ function makeTokens(fastify: FastifyInstance, userId: string, email: string) {
     { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' }
   );
   return { access, refresh };
+}
+
+function generateCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 export default async function authRoutes(fastify: FastifyInstance) {
@@ -60,49 +68,76 @@ export default async function authRoutes(fastify: FastifyInstance) {
       // 本地开发：跳过邮件，直接验证通过
       await fastify.db.query('UPDATE users SET is_verified = true WHERE id = $1', [user.id]);
       fastify.log.info({ email }, '[auth] 开发模式：自动跳过邮箱验证');
-    } else {
-      const token = randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      await fastify.db.query(
-        `INSERT INTO verification_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
-        [user.id, token, expiresAt]
-      );
-      await sendVerificationEmail(email, token);
-      fastify.log.info({ email }, '[auth] 验证邮件已发送');
+      return reply.status(201).send({
+        message: 'Registration successful (dev mode).',
+        user_id: user.id,
+        dev_mode: true,
+      });
     }
 
+    // 生产：生成6位验证码
+    const code = generateCode();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10分钟有效
+    await fastify.db.query(
+      `INSERT INTO verification_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET token = $2, expires_at = $3`,
+      [user.id, code, expiresAt]
+    );
+
+    await sendVerificationEmail(email, code);
+    fastify.log.info({ email, code }, '[auth] 验证码已发送');
+
     return reply.status(201).send({
-      message: 'Registration successful. Please check your email to verify your account.',
+      message: 'Verification code sent to your email.',
       user_id: user.id,
     });
   });
 
-  // GET /api/auth/verify-email?token=xxx
-  fastify.get('/verify-email', async (req: FastifyRequest<{ Querystring: { token: string } }>, reply: FastifyReply) => {
-    const { token } = req.query;
-    if (!token) return reply.status(400).send({ error: 'Token required' });
+  // POST /api/auth/verify-code
+  fastify.post('/verify-code', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { email, code } = VerifyCodeBody.parse(req.body);
+    fastify.log.info({ email }, '[auth] 验证码验证请求');
 
-    fastify.log.debug({ token: token.slice(0, 8) + '...' }, '[auth] 邮箱验证');
-
-    const result = await fastify.db.query(
-      `SELECT vt.user_id, vt.expires_at FROM verification_tokens vt WHERE vt.token = $1`,
-      [token]
+    const userResult = await fastify.db.query(
+      'SELECT id, is_verified FROM users WHERE email = $1',
+      [email]
     );
 
-    if (result.rows.length === 0) {
-      fastify.log.warn('[auth] 验证 token 无效');
-      return reply.status(400).send({ error: 'Invalid or expired token' });
+    if (userResult.rows.length === 0) {
+      return reply.status(404).send({ error: 'User not found' });
     }
 
-    const { user_id, expires_at } = result.rows[0];
+    const user = userResult.rows[0];
+
+    if (user.is_verified) {
+      return reply.status(400).send({ error: 'Already verified' });
+    }
+
+    const tokenResult = await fastify.db.query(
+      `SELECT token, expires_at FROM verification_tokens WHERE user_id = $1`,
+      [user.id]
+    );
+
+    if (tokenResult.rows.length === 0) {
+      return reply.status(400).send({ error: 'No verification code sent' });
+    }
+
+    const { token, expires_at } = tokenResult.rows[0];
+
+    if (token !== code) {
+      fastify.log.warn({ email }, '[auth] 验证码错误');
+      return reply.status(400).send({ error: 'Invalid verification code' });
+    }
+
     if (new Date(expires_at) < new Date()) {
-      fastify.log.warn({ user_id }, '[auth] 验证 token 已过期');
-      return reply.status(400).send({ error: 'Token expired' });
+      fastify.log.warn({ email }, '[auth] 验证码已过期');
+      return reply.status(400).send({ error: 'Verification code expired' });
     }
 
-    await fastify.db.query('UPDATE users SET is_verified = true WHERE id = $1', [user_id]);
-    await fastify.db.query('DELETE FROM verification_tokens WHERE user_id = $1', [user_id]);
-    fastify.log.info({ user_id }, '[auth] 邮箱验证成功');
+    await fastify.db.query('UPDATE users SET is_verified = true WHERE id = $1', [user.id]);
+    await fastify.db.query('DELETE FROM verification_tokens WHERE user_id = $1', [user.id]);
+    fastify.log.info({ email }, '[auth] 邮箱验证成功');
 
     return { message: 'Email verified successfully. You can now log in.' };
   });

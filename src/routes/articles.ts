@@ -18,18 +18,18 @@ export default async function articleRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/',
     { preHandler: [fastify.authenticate] },
-    async (req: FastifyRequest<{ Querystring: { page?: string; limit?: string; source?: string } }>, reply: FastifyReply) => {
-      const page = Math.max(1, Number(req.query.page) || 1);
-      const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const page = Math.max(1, Number((req.query as any).page) || 1);
+      const limit = Math.min(50, Math.max(1, Number((req.query as any).limit) || 20));
       const offset = (page - 1) * limit;
       const userId = req.user.sub;
 
       let whereClause = '';
       const queryParams: (string | number)[] = [userId, limit, offset];
 
-      if (req.query.source === 'ai') {
+      if ((req.query as any).source === 'ai') {
         whereClause = 'WHERE a.is_ai_generated = true';
-      } else if (req.query.source === 'crawled') {
+      } else if ((req.query as any).source === 'crawled') {
         whereClause = 'WHERE a.is_ai_generated = false';
       }
 
@@ -62,8 +62,8 @@ export default async function articleRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/:id',
     { preHandler: [fastify.authenticate] },
-    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const { id } = req.params;
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { id } = req.params as any;
       const userId = req.user.sub;
 
       const result = await fastify.db.query(
@@ -86,8 +86,8 @@ export default async function articleRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/:id/read',
     { preHandler: [fastify.authenticate] },
-    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const { id } = req.params;
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { id } = req.params as any;
       const userId = req.user.sub;
 
       await fastify.db.query(

@@ -64,9 +64,9 @@ export default async function wordRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/:wordId/review',
     { preHandler: [fastify.authenticate] },
-    async (req: FastifyRequest<{ Params: { wordId: string }; Body: { quality: number } }>, reply: FastifyReply) => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
       const userId = req.user.sub;
-      const { wordId } = req.params;
+      const { wordId } = req.params as Record<string, string>;
       const { quality } = z.object({ quality: z.number().min(0).max(5) }).parse(req.body);
 
       // Get or create progress record
@@ -163,8 +163,8 @@ export default async function wordRoutes(fastify: FastifyInstance) {
 
   // GET /api/words/:wordId
   // Word detail
-  fastify.get('/:wordId', { preHandler: [fastify.authenticate] }, async (req: FastifyRequest<{ Params: { wordId: string } }>, reply: FastifyReply) => {
-    const { wordId } = req.params;
+  fastify.get('/:wordId', { preHandler: [fastify.authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { wordId } = req.params as Record<string, string>;
     const userId = req.user.sub;
 
     const wordRes = await fastify.db.query(

@@ -80,9 +80,9 @@ export default async function statsRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/session-time',
     { preHandler: [fastify.authenticate] },
-    async (req: FastifyRequest<{ Body: { seconds: number } }>, reply: FastifyReply) => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
       const userId = req.user.sub;
-      const { seconds } = req.body;
+      const { seconds } = req.body as any;
 
       if (!seconds || seconds < 0) return reply.status(400).send({ error: 'Invalid seconds' });
 

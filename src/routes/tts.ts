@@ -7,8 +7,8 @@ export default async function ttsRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/:articleId',
     { preHandler: [fastify.authenticate] },
-    async (req: FastifyRequest<{ Params: { articleId: string } }>, reply: FastifyReply) => {
-      const { articleId } = req.params;
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const { articleId } = req.params as { articleId: string };
 
       // Check cache
       const cached = await fastify.db.query(

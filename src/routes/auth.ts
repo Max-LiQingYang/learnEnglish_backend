@@ -236,9 +236,9 @@ export default async function authRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/auth/logout
-  fastify.post('/logout', { preHandler: [fastify.authenticate] }, async (req: FastifyRequest<{ Body: { refresh_token?: string } }>, reply: FastifyReply) => {
+  fastify.post('/logout', { preHandler: [fastify.authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const userId = req.user.sub;
-    const { refresh_token } = req.body || {};
+    const { refresh_token } = (req.body as any) || {};
     if (refresh_token) {
       await fastify.db.query('DELETE FROM refresh_tokens WHERE token = $1', [refresh_token]);
     }

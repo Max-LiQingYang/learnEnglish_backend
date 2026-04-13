@@ -79,9 +79,11 @@ export default async function authRoutes(fastify: FastifyInstance) {
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10分钟有效
     await fastify.db.query(
-      `INSERT INTO verification_tokens (user_id, token, expires_at)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (user_id) DO UPDATE SET token = $2, expires_at = $3`,
+      `DELETE FROM verification_tokens WHERE user_id = $1`,
+      [user.id]
+    );
+    await fastify.db.query(
+      `INSERT INTO verification_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
       [user.id, code, expiresAt]
     );
 

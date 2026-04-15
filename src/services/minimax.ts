@@ -7,6 +7,13 @@
 import crypto from 'crypto';
 import { m2Chat } from './m2.js';
 
+// Old API (still used by TTS and grammar analysis)
+const MINIMAX_BASE = 'https://api.minimax.chat/v1';
+const headers = () => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${process.env.MINIMAX_API_KEY}`,
+});
+
 // ============================================================
 // Article generation (v1.1 — with theme support)
 // ============================================================

@@ -71,6 +71,7 @@ Requirements:
     choices: Array<{ message: { content: string } }>;
   };
 
+  if (!data.choices || data.choices.length === 0) { throw new Error("Minimax API returned no choices: " + JSON.stringify(data).slice(0, 200)); }
   const rawContent = data.choices[0].message.content.trim();
 
   // Parse title and content

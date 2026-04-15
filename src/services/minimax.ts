@@ -1,17 +1,11 @@
 /**
  * Minimax API service for:
- *  1. AI article generation (with theme + search context)
- *  2. TTS (Text-to-Speech) — whole article & per-sentence
+ *  1. AI article generation (with theme + search context) — uses M2 API
+ *  2. TTS (Text-to-Speech) — whole article & per-sentence — uses old API
  */
 
 import crypto from 'crypto';
-
-const MINIMAX_BASE = 'https://api.minimax.chat/v1';
-
-const headers = () => ({
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${process.env.MINIMAX_API_KEY}`,
-});
+import { m2Chat } from './m2.js';
 
 // ============================================================
 // Article generation (v1.1 — with theme support)
@@ -33,7 +27,8 @@ export async function generateArticle(opts: GenerateArticleOptions): Promise<{
   const wordList = targetWords.join(', ');
   const keywordsHint = themeKeywords?.length ? ` (related keywords: ${themeKeywords.join(', ')})` : '';
 
-  const prompt = `Write a short English article (200-300 words) for a ${level} English learner.
+  const systemPrompt = 'You are an expert English language teacher who writes engaging educational content based on real-world news and topics.';
+  const userPrompt = `Write a short English article (200-300 words) for a ${level} English learner.
 
 Topic/Theme: ${theme}${keywordsHint}
 
@@ -46,33 +41,15 @@ Requirements:
 - Format: Title on first line, then blank line, then article body
 - Each paragraph should be separated by a blank line`;
 
-  const body = {
-    model: 'abab6.5s-chat',
+  const rawContent = await m2Chat({
     messages: [
-      { role: 'system', content: 'You are an expert English language teacher who writes engaging educational content based on real-world news and topics.' },
-      { role: 'user', content: prompt },
+      { role: 'user' as const, content: userPrompt },
     ],
+    system: systemPrompt,
+    maxTokens: 800,
     temperature: 0.7,
-    max_tokens: 800,
-  };
-
-  const res = await fetch(`${MINIMAX_BASE}/text/chatcompletion_v2`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify(body),
+    model: 'MiniMax-M2.5',
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Minimax API error: ${res.status} ${err}`);
-  }
-
-  const data = await res.json() as {
-    choices: Array<{ message: { content: string } }>;
-  };
-
-  if (!data.choices || data.choices.length === 0) { throw new Error("Minimax API returned no choices: " + JSON.stringify(data).slice(0, 200)); }
-  const rawContent = data.choices[0].message.content.trim();
 
   // Parse title and content
   const lines = rawContent.split('\n').filter(Boolean);

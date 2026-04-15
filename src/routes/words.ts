@@ -125,6 +125,40 @@ export default async function wordRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // GET /api/words/selectable
+  // Get words for AI article generation — supports source=weak|random
+  fastify.get('/selectable', { preHandler: [fastify.authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const userId = req.user.sub;
+    const source = ((req.query as any).source as string) || 'weak';
+    const limit = Math.min(50, Math.max(1, Number((req.query as any).limit) || 30));
+
+    if (source === 'weak') {
+      // Weak + learning words, ordered by lowest ease_factor
+      const result = await fastify.db.query(
+        `SELECT w.id, w.word, w.phonetic_us, w.phonetic_uk, w.definitions
+         FROM user_word_progress uwp
+         JOIN words w ON w.id = uwp.word_id
+         WHERE uwp.user_id = $1 AND uwp.status IN ('weak', 'learning')
+         ORDER BY uwp.ease_factor ASC
+         LIMIT $2`,
+        [userId, limit]
+      );
+      return { words: result.rows };
+    } else {
+      // Random from studied words (any status except 'new')
+      const result = await fastify.db.query(
+        `SELECT w.id, w.word, w.phonetic_us, w.phonetic_uk, w.definitions
+         FROM user_word_progress uwp
+         JOIN words w ON w.id = uwp.word_id
+         WHERE uwp.user_id = $1
+         ORDER BY RANDOM()
+         LIMIT $2`,
+        [userId, limit]
+      );
+      return { words: result.rows };
+    }
+  });
+
   // GET /api/words/weak
   // Get user's weak words
   fastify.get('/weak', { preHandler: [fastify.authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {

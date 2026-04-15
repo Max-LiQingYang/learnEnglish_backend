@@ -1,8 +1,10 @@
 /**
  * Minimax API service for:
- *  1. AI article generation
- *  2. TTS (Text-to-Speech)
+ *  1. AI article generation (with theme + search context)
+ *  2. TTS (Text-to-Speech) — whole article & per-sentence
  */
+
+import crypto from 'crypto';
 
 const MINIMAX_BASE = 'https://api.minimax.chat/v1';
 
@@ -12,28 +14,46 @@ const headers = () => ({
 });
 
 // ============================================================
-// Article generation
+// Article generation (v1.1 — with theme support)
 // ============================================================
 
-export async function generateArticle(targetWords: string[], level: string): Promise<string> {
+export interface GenerateArticleOptions {
+  targetWords: string[];
+  level: string;
+  theme: string;
+  themeKeywords?: string[];
+}
+
+export async function generateArticle(opts: GenerateArticleOptions): Promise<{
+  title: string;
+  content: string;
+  sentences: { index: number; text: string }[];
+}> {
+  const { targetWords, level, theme, themeKeywords } = opts;
   const wordList = targetWords.join(', ');
+  const keywordsHint = themeKeywords?.length ? ` (related keywords: ${themeKeywords.join(', ')})` : '';
 
   const prompt = `Write a short English article (200-300 words) for a ${level} English learner.
+
+Topic/Theme: ${theme}${keywordsHint}
+
 Requirements:
 - Naturally incorporate ALL of these vocabulary words: ${wordList}
-- The article should be coherent, engaging, and thematically unified
+- The article should be about the given topic, coherent, engaging, and informative
 - Use vocabulary and sentence structure appropriate for ${level} level
+- Reference recent real-world events or facts related to the topic when possible
 - Do not include a word list or explanation — just the article
-- Format: Title on first line, then blank line, then article body`;
+- Format: Title on first line, then blank line, then article body
+- Each paragraph should be separated by a blank line`;
 
   const body = {
     model: 'abab6.5s-chat',
     messages: [
-      { role: 'system', content: 'You are an expert English language teacher who writes engaging educational content.' },
+      { role: 'system', content: 'You are an expert English language teacher who writes engaging educational content based on real-world news and topics.' },
       { role: 'user', content: prompt },
     ],
     temperature: 0.7,
-    max_tokens: 600,
+    max_tokens: 800,
   };
 
   const res = await fetch(`${MINIMAX_BASE}/text/chatcompletion_v2`, {
@@ -51,11 +71,30 @@ Requirements:
     choices: Array<{ message: { content: string } }>;
   };
 
-  return data.choices[0].message.content.trim();
+  const rawContent = data.choices[0].message.content.trim();
+
+  // Parse title and content
+  const lines = rawContent.split('\n').filter(Boolean);
+  const title = lines[0].replace(/^#+\s*/, '').trim() || 'AI Generated Article';
+  const content = lines.slice(1).join('\n').trim();
+
+  // Split content into sentences
+  const sentences = splitIntoSentences(content);
+
+  return { title, content, sentences };
 }
 
 // ============================================================
-// Grammar analysis for word detail
+// Legacy generate (for backward compatibility)
+// ============================================================
+
+export async function generateArticleLegacy(targetWords: string[], level: string): Promise<string> {
+  const result = await generateArticle({ targetWords, level, theme: 'general' });
+  return `${result.title}\n\n${result.content}`;
+}
+
+// ============================================================
+// Grammar analysis
 // ============================================================
 
 export async function analyzeGrammar(word: string, sentence: string): Promise<string> {
@@ -91,16 +130,16 @@ Keep the explanation under 80 words. Focus on part of speech, function, and any 
 }
 
 // ============================================================
-// TTS
+// TTS — single sentence
 // ============================================================
 
-export async function synthesizeSpeech(text: string): Promise<Buffer> {
+export async function synthesizeSpeech(text: string, speed = 1.0): Promise<Buffer> {
   const body = {
     model: 'speech-01',
     text,
     voice_setting: {
       voice_id: 'female-tianmei',
-      speed: 1.0,
+      speed,
       vol: 1.0,
       pitch: 0,
     },
@@ -130,15 +169,37 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
 }
 
 // ============================================================
-// Content safety filter
+// Content safety filter (enhanced)
 // ============================================================
 
-const BLOCKED_KEYWORDS = [
-  'violence', 'explicit', 'hate', 'suicide', 'drugs', 'weapon',
-  '暴力', '色情', '仇恨',
-];
+import { containsSensitiveContent, isArticleSafe } from './contentFilter.js';
 
 export function isSafeContent(text: string): boolean {
-  const lower = text.toLowerCase();
-  return !BLOCKED_KEYWORDS.some((kw) => lower.includes(kw));
+  return isArticleSafe(text);
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+
+/**
+ * Split text into sentences
+ */
+export function splitIntoSentences(text: string): { index: number; text: string }[] {
+  // Split on sentence-ending punctuation followed by space or newline
+  const raw = text
+    .replace(/\n+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  return raw.map((text, index) => ({ index, text }));
+}
+
+/**
+ * Compute MD5 hash for a sorted list of word IDs (for cache key)
+ */
+export function computeWordHash(wordIds: string[]): string {
+  const sorted = [...wordIds].sort().join(',');
+  return crypto.createHash('md5').update(sorted).digest('hex');
 }

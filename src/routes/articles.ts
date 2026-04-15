@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { generateArticle, isSafeContent } from '../services/minimax.js';
+import { generateArticle, isSafeContent, computeWordHash, splitIntoSentences } from '../services/minimax.js';
+import { validateTheme } from '../services/contentFilter.js';
 import { WordListType } from '../types.js';
 
 const LEVEL_MAP: Record<WordListType, string> = {
@@ -12,9 +13,23 @@ const LEVEL_MAP: Record<WordListType, string> = {
   ielts: 'advanced',
 };
 
+const MAX_RETRIES = 3;
+
+async function withRetry<T>(fn: () => Promise<T>, retries = MAX_RETRIES): Promise<T> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (attempt === retries - 1) throw e;
+      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error('Retry exhausted');
+}
+
 export default async function articleRoutes(fastify: FastifyInstance) {
-  // GET /api/articles
-  // Article list with pagination
+  // GET /api/articles — Article list with pagination
   fastify.get(
     '/',
     { preHandler: [fastify.authenticate] },
@@ -36,6 +51,7 @@ export default async function articleRoutes(fastify: FastifyInstance) {
       const result = await fastify.db.query(
         `SELECT a.id, a.title, a.source_name, a.is_ai_generated,
                 a.created_at, LEFT(a.content, 200) as excerpt,
+                a.theme, a.reference_url,
                 uar.read_at IS NOT NULL as is_read
          FROM articles a
          LEFT JOIN user_article_reads uar ON uar.article_id = a.id AND uar.user_id = $1
@@ -77,12 +93,17 @@ export default async function articleRoutes(fastify: FastifyInstance) {
       );
 
       if (result.rows.length === 0) return reply.status(404).send({ error: 'Article not found' });
-      return result.rows[0];
+
+      const article = result.rows[0];
+
+      // Also return sentences
+      const sentences = splitIntoSentences(article.content);
+
+      return { ...article, sentences };
     }
   );
 
-  // POST /api/articles/:id/read
-  // Mark article as read
+  // POST /api/articles/:id/read — Mark article as read
   fastify.post(
     '/:id/read',
     { preHandler: [fastify.authenticate] },
@@ -97,7 +118,6 @@ export default async function articleRoutes(fastify: FastifyInstance) {
         [userId, id]
       );
 
-      // Update study session
       const today = new Date().toISOString().split('T')[0];
       await fastify.db.query(
         `INSERT INTO study_sessions (user_id, date, articles_read)
@@ -111,28 +131,65 @@ export default async function articleRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // POST /api/articles/generate
-  // AI-generate a personalized article from selected words
+  // POST /api/articles/generate (v1.1)
+  // AI-generate a personalized article from selected words + theme
   fastify.post(
     '/generate',
     { preHandler: [fastify.authenticate] },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const userId = req.user.sub;
       const GenerateBody = z.object({
-        word_ids: z.array(z.string().uuid()).min(10).max(20),
+        wordIds: z.array(z.string().uuid()).min(10).max(20),
+        theme: z.string().min(1).max(100),
+        customTheme: z.string().max(50).nullable().optional(),
       });
 
-      const { word_ids } = GenerateBody.parse(req.body);
+      const parsed = GenerateBody.parse(req.body);
+      const { wordIds } = parsed;
+      const theme = parsed.customTheme || parsed.theme;
 
-      // Fetch the actual words
+      // Validate theme for sensitive content
+      const themeCheck = validateTheme(theme);
+      if (!themeCheck.valid) {
+        return reply.status(400).send({
+          error: themeCheck.suggestion || '主题不合规',
+          code: 1003,
+        });
+      }
+
+      // Check cache first
+      const wordHash = computeWordHash(wordIds);
+      fastify.log.info({ userId, theme, wordHash, wordCount: wordIds.length }, '[articles] 检查缓存');
+
+      const cached = await fastify.db.query(
+        `SELECT ac.article_id, a.id, a.title, a.content, a.theme,
+                a.reference_url, a.reference_title, a.created_at,
+                a.source_name, a.is_ai_generated
+         FROM ai_article_cache ac
+         JOIN articles a ON a.id = ac.article_id
+         WHERE ac.theme = $1 AND ac.word_hash = $2`,
+        [theme, wordHash]
+      );
+
+      if (cached.rows.length > 0) {
+        fastify.log.info({ userId, articleId: cached.rows[0].id }, '[articles] 缓存命中');
+        const article = cached.rows[0];
+        const sentences = splitIntoSentences(article.content);
+        return {
+          article: { ...article, sentences },
+          cached: true,
+        };
+      }
+
+      // Fetch target words
       const wordsRes = await fastify.db.query(
         `SELECT word FROM words WHERE id = ANY($1::uuid[])`,
-        [word_ids]
+        [wordIds]
       );
       const targetWords = wordsRes.rows.map((r: { word: string }) => r.word);
 
       if (targetWords.length < 10) {
-        return reply.status(400).send({ error: 'Not enough valid words found' });
+        return reply.status(400).send({ error: '有效单词数不足', code: 1001 });
       }
 
       // Get user level
@@ -142,33 +199,74 @@ export default async function articleRoutes(fastify: FastifyInstance) {
       );
       const level = LEVEL_MAP[userRes.rows[0].word_list_type as WordListType] || 'intermediate';
 
-      // Generate article
-      fastify.log.info({ userId, wordCount: targetWords.length, level, words: targetWords }, '[articles] 开始 AI 生成文章');
-      const rawContent = await generateArticle(targetWords, level);
-
-      if (!isSafeContent(rawContent)) {
-        return reply.status(422).send({ error: 'Generated content failed safety check. Please try again.' });
+      // Get theme keywords (if from preset)
+      let themeKeywords: string[] = [];
+      const topicRes = await fastify.db.query(
+        `SELECT keywords FROM topics WHERE name = $1 AND is_active = true`,
+        [theme]
+      );
+      if (topicRes.rows.length > 0) {
+        themeKeywords = topicRes.rows[0].keywords || [];
       }
 
-      // Parse title from first line
-      const lines = rawContent.split('\n').filter(Boolean);
-      const title = lines[0] || 'AI Generated Article';
-      const content = lines.slice(1).join('\n').trim();
+      // Generate article with retry
+      fastify.log.info({ userId, wordCount: targetWords.length, level, theme }, '[articles] 开始 AI 生成文章');
 
+      let result: Awaited<ReturnType<typeof generateArticle>>;
+      try {
+        result = await withRetry(() => generateArticle({
+          targetWords,
+          level,
+          theme,
+          themeKeywords,
+        }));
+      } catch (e) {
+        fastify.log.error({ err: (e as Error).message }, '[articles] AI 生成失败（重试已耗尽）');
+        return reply.status(500).send({
+          error: '多次尝试失败，请稍后再试',
+          code: 2003,
+        });
+      }
+
+      // Safety check
+      if (!isSafeContent(result.content)) {
+        return reply.status(422).send({
+          error: '生成失败，请尝试其他主题',
+          code: 2002,
+        });
+      }
+
+      // Save to DB
       const articleRes = await fastify.db.query(
-        `INSERT INTO articles (title, content, source_name, is_ai_generated, ai_target_words)
-         VALUES ($1, $2, 'AI', true, $3)
+        `INSERT INTO articles (title, content, source_name, is_ai_generated, ai_target_words, theme)
+         VALUES ($1, $2, 'AI', true, $3, $4)
          RETURNING *`,
-        [title, content, JSON.stringify(targetWords)]
+        [result.title, result.content, JSON.stringify(targetWords), theme]
       );
 
-      fastify.log.info({ userId, articleId: articleRes.rows[0].id, title }, '[articles] AI 文章生成完成');
-      return articleRes.rows[0];
+      const article = articleRes.rows[0];
+
+      // Save to cache
+      await fastify.db.query(
+        `INSERT INTO ai_article_cache (theme, word_hash, word_count, article_id)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (theme, word_hash) DO NOTHING`,
+        [theme, wordHash, wordIds.length, article.id]
+      );
+
+      fastify.log.info({ userId, articleId: article.id, title: result.title }, '[articles] AI 文章生成完成');
+
+      return {
+        article: {
+          ...article,
+          sentences: result.sentences,
+        },
+        cached: false,
+      };
     }
   );
 
-  // GET /api/articles/weak-words
-  // Get user's weak words for word selector (AI generation)
+  // GET /api/articles/weak-words (keep for backward compatibility)
   fastify.get(
     '/weak-words',
     { preHandler: [fastify.authenticate] },
@@ -190,7 +288,6 @@ export default async function articleRoutes(fastify: FastifyInstance) {
   );
 
   // POST /api/articles/vocabulary-note
-  // Save word from reading to vocabulary notebook (生词本)
   fastify.post(
     '/vocabulary-note',
     { preHandler: [fastify.authenticate] },

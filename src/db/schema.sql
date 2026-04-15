@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS articles (
   source_name     VARCHAR(100),   -- 'VOA' | 'BBC' | 'AI'
   is_ai_generated BOOLEAN NOT NULL DEFAULT false,
   ai_target_words JSONB,          -- words used to generate (only for AI articles)
+  theme           VARCHAR(100),
+  reference_url   TEXT,
+  reference_title VARCHAR(500),
+  search_content  TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -121,7 +125,7 @@ CREATE TABLE IF NOT EXISTS user_vocabulary_notes (
 );
 
 -- ============================================================
--- TTS Cache
+-- TTS Cache (legacy whole-article cache)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS tts_cache (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -129,6 +133,50 @@ CREATE TABLE IF NOT EXISTS tts_cache (
   audio_url  VARCHAR(1000) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================
+-- Topics
+-- ============================================================
+CREATE TABLE IF NOT EXISTS topics (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         VARCHAR(100) NOT NULL,
+  keywords     JSONB NOT NULL DEFAULT '[]',
+  icon         VARCHAR(50),
+  sort_order   INT NOT NULL DEFAULT 0,
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================
+-- AI Article Cache
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ai_article_cache (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme           VARCHAR(100) NOT NULL,
+  word_hash       VARCHAR(64) NOT NULL,
+  word_count      INT NOT NULL,
+  article_id      UUID NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(theme, word_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cache_lookup ON ai_article_cache(theme, word_hash);
+
+-- ============================================================
+-- TTS Sentence Cache
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tts_sentence_cache (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  article_id   UUID NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+  sentence     TEXT NOT NULL,
+  audio_data   TEXT NOT NULL,
+  duration_ms  INT,
+  sort_order   INT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(article_id, sort_order)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tts_sentence_article ON tts_sentence_cache(article_id, sort_order);
 
 -- ============================================================
 -- Study Sessions (for stats)

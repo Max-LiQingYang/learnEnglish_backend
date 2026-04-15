@@ -42,10 +42,25 @@ function generateCode(): string {
 export default async function authRoutes(fastify: FastifyInstance) {
   // POST /api/auth/register
   fastify.post('/register', async (req: FastifyRequest, reply: FastifyReply) => {
-    const body = RegisterBody.parse(req.body);
-    const { email, password, word_list_type } = body;
+    // 完整请求日志
+    fastify.log.warn({
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+      body: req.body,
+      ip: req.ip,
+    }, '[auth] 注册请求 - 完整入口日志');
 
-    fastify.log.info({ email, word_list_type }, '[auth] 注册请求');
+    let body;
+    try {
+      body = RegisterBody.parse(req.body);
+    } catch (err) {
+      fastify.log.error({ err, body: req.body }, '[auth] 注册参数解析失败');
+      return reply.status(400).send({ error: 'Invalid request body', details: err });
+    }
+
+    const { email, password, word_list_type } = body;
+    fastify.log.warn({ email, word_list_type }, '[auth] 注册参数解析成功');
 
     const existing = await fastify.db.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {

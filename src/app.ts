@@ -12,6 +12,7 @@ import wordRoutes from './routes/words.js';
 import articleRoutes from './routes/articles.js';
 import ttsRoutes from './routes/tts.js';
 import statsRoutes from './routes/stats.js';
+import topicRoutes from './routes/topics.js';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -91,6 +92,7 @@ async function start() {
   await fastify.register(articleRoutes, { prefix: '/api/articles' });
   await fastify.register(ttsRoutes,     { prefix: '/api/tts' });
   await fastify.register(statsRoutes,   { prefix: '/api/stats' });
+  await fastify.register(topicRoutes,   { prefix: '/api/topics' });
 
   fastify.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
 

@@ -26,7 +26,8 @@ echo "[3/6] 构建项目..."
 npm run build
 
 echo "[4/6] 重启 PM2 服务..."
-pm2 startOrReload ecosystem.config.js --update-env
+pm2 delete learn-english-backend >/dev/null 2>&1 || true
+pm2 start ecosystem.config.js --update-env
 pm2 save
 
 echo "[5/6] 同步 Nginx 配置..."

@@ -13,8 +13,12 @@ import articleRoutes from './routes/articles.js';
 import ttsRoutes from './routes/tts.js';
 import statsRoutes from './routes/stats.js';
 import topicRoutes from './routes/topics.js';
+import { sendErrorAlert } from './services/alerts.js';
 
 const isDev = process.env.NODE_ENV !== 'production';
+const slowRequestMs = Number(process.env.SLOW_REQUEST_MS) > 0
+  ? Number(process.env.SLOW_REQUEST_MS)
+  : 1000;
 
 const fastify = Fastify({
   logger: isDev
@@ -31,6 +35,25 @@ const fastify = Fastify({
         },
       }
     : { level: 'warn' },
+});
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  fastify.log.error({ err: reason }, 'unhandled promise rejection');
+  void sendErrorAlert({
+    type: 'unhandled_rejection',
+    message,
+    stack: reason instanceof Error ? reason.stack : undefined,
+  }, fastify.log);
+});
+
+process.on('uncaughtException', (error) => {
+  fastify.log.fatal({ err: error }, 'uncaught exception');
+  void sendErrorAlert({
+    type: 'uncaught_exception',
+    message: error.message,
+    stack: error.stack,
+  }, fastify.log).finally(() => process.exit(1));
 });
 
 async function start() {
@@ -57,13 +80,24 @@ async function start() {
 
   // ── 响应日志 ──────────────────────────────────────────────
   fastify.addHook('onResponse', (req, reply, done) => {
-    const ms = reply.elapsedTime.toFixed(1);
+    const elapsedMs = reply.elapsedTime;
+    const ms = elapsedMs.toFixed(1);
     const level = reply.statusCode >= 500 ? 'error'
+                : elapsedMs >= slowRequestMs ? 'warn'
                 : reply.statusCode >= 400 ? 'warn'
                 : 'info';
     fastify.log[level](
-      { method: req.method, url: req.url, status: reply.statusCode, ms },
-      `← ${reply.statusCode} ${ms}ms`
+      {
+        method: req.method,
+        url: req.url,
+        status: reply.statusCode,
+        ms,
+        requestId: req.id,
+        slow: elapsedMs >= slowRequestMs,
+      },
+      elapsedMs >= slowRequestMs
+        ? `slow request ${reply.statusCode} ${ms}ms`
+        : `← ${reply.statusCode} ${ms}ms`
     );
     done();
   });
@@ -77,11 +111,23 @@ async function start() {
         details: JSON.parse(error.message),
       });
     }
+    const statusCode = error.statusCode || 500;
     fastify.log.error(
-      { url: req.url, method: req.method, err: error.message, stack: error.stack },
+      { url: req.url, method: req.method, err: error.message, stack: error.stack, requestId: req.id },
       '未处理异常'
     );
-    return reply.status(error.statusCode || 500).send({
+    if (statusCode >= 500) {
+      void sendErrorAlert({
+        type: 'http_error',
+        message: error.message || 'Internal server error',
+        method: req.method,
+        url: req.url,
+        statusCode,
+        requestId: req.id,
+        stack: error.stack,
+      }, fastify.log);
+    }
+    return reply.status(statusCode).send({
       error: error.message || 'Internal server error',
     });
   });
